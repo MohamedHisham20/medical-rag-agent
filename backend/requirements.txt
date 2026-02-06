@@ -1,0 +1,8 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0  # The server that runs FastAPI
+pydantic>=2.6.0            # Data validation
+langchain>=0.1.0           # The orchestration framework
+langchain-community        # Community tools (PDF loaders, etc.)
+chromadb>=0.4.22           # Vector Database
+pypdf                      # For reading PDF files
+python-multipart           # Required for file uploads
