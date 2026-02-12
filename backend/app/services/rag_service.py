@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
@@ -14,8 +15,12 @@ class MedicalRAGService:
         # 1. Setup the "Embedder" (Turns text into math)
         self.embedding_model = OllamaEmbeddings(model="nomic-embed-text")
         
-        # 2. Setup the "Brain" (The LLM)
-        self.llm = ChatOllama(model="llama3")
+        # 2. Setup the "Brain" (The LLM) - optimized for GTX 1650 (4GB VRAM)
+        self.llm = ChatOllama(
+            model="llama3.2:1b",  # Smaller model fits fully on GPU
+            temperature=0,  # More deterministic, faster
+            num_ctx=2048,   # Smaller context window for faster processing
+        )
         
         # 3. Setup the Database path
         self.persist_directory = "./chroma_db"
@@ -85,10 +90,19 @@ class MedicalRAGService:
         if not self.vector_store:
             raise ValueError("No documents have been uploaded yet!")
 
-        # 1. Create a Retriever (Finds the top 3 most relevant chunks)
-        retriever = self.vector_store.as_retriever(search_kwargs={"k": 3})
-
-        # 2. Define the Prompt (The instructions for the AI)
+        print(f"\n--- Query: {question[:50]}... ---")
+        start_time = time.time()
+        
+        # 1. Retrieve documents ONCE (reduced from k=3 to k=2 for speed)
+        retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
+        source_docs = retriever.invoke(question)
+        retrieval_time = time.time() - start_time
+        print(f"   -> Retrieval took: {retrieval_time:.2f}s")
+        
+        # 2. Format context from retrieved docs
+        context = "\n\n".join([doc.page_content for doc in source_docs])
+        
+        # 3. Define the Prompt (The instructions for the AI)
         template = """You are a helpful medical assistant. Use the following context to answer the question.
         If you don't know the answer based on the context, say so. Do not make up medical information.
         
@@ -98,20 +112,13 @@ class MedicalRAGService:
         """
         prompt = ChatPromptTemplate.from_template(template)
 
-        # 3. Build the Chain (Retrieval -> Prompt -> LLM)
-        chain = (
-            {"context": retriever, "question": RunnablePassthrough()}
-            | prompt
-            | self.llm
-            | StrOutputParser()
-        )
-
-        # 4. Run the chain
-        response = chain.invoke(question)
-        
-        # 5. Return both answer and source documents (for credibility)
-        # (We retrieve docs manually here just to return them to the UI)
-        source_docs = retriever.get_relevant_documents(question)
+        # 4. Build and run the LLM chain (without retriever, using pre-fetched context)
+        llm_start = time.time()
+        chain = prompt | self.llm | StrOutputParser()
+        response = chain.invoke({"context": context, "question": question})
+        llm_time = time.time() - llm_start
+        print(f"   -> LLM inference took: {llm_time:.2f}s")
+        print(f"   -> Total query time: {time.time() - start_time:.2f}s\n")
         
         return response, source_docs
 
